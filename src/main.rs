@@ -80,20 +80,12 @@ define_class!(
 
             // Get the general pasteboard and its current change count
             log_ts!("Accessing clipboard...");
-            let pasteboard = unsafe {
-                log_ts!("About to call NSPasteboard::generalPasteboard()");
-                let pb = NSPasteboard::generalPasteboard();
-                log_ts!("NSPasteboard::generalPasteboard() completed");
-                pb
-            };
+            let pasteboard = unsafe { NSPasteboard::generalPasteboard() };
+            log_ts!("NSPasteboard::generalPasteboard() completed");
 
             log_ts!("Getting clipboard change count...");
-            let initial_change_count = unsafe {
-                log_ts!("About to call pasteboard.changeCount()");
-                let count = pasteboard.changeCount();
-                log_ts!("pasteboard.changeCount() returned {}", count);
-                count
-            };
+            let initial_change_count = unsafe { pasteboard.changeCount() };
+            log_ts!("pasteboard.changeCount() returned {}", initial_change_count);
 
             log_ts!("Storing initial change count: {}", initial_change_count);
             self.ivars()
@@ -119,11 +111,12 @@ define_class!(
             // Activate app and make window visible
             log_ts!("Activating application...");
             let app = NSApplication::sharedApplication(mtm);
+
+            log_ts!("About to activate app");
             unsafe {
-                log_ts!("About to activate app");
                 app.activate();
-                log_ts!("App activated");
-            };
+            }
+            log_ts!("App activated");
 
             log_ts!("Making window visible...");
             window.makeKeyAndOrderFront(None);
@@ -209,8 +202,9 @@ impl AppDelegate {
             unsafe { NSTextField::initWithFrame(NSTextField::alloc(mtm), text_field_frame) };
 
         log_ts!("Configuring text field properties");
+
+        // Configure text field properties
         unsafe {
-            // Configure text field properties
             text_field.setEditable(false);
             text_field.setBezeled(false);
             text_field.setDrawsBackground(false);
@@ -227,11 +221,11 @@ impl AppDelegate {
             // Add to content view
             log_ts!("Adding text field to content view");
             content_view.addSubview(&text_field);
-
-            // Store the text field
-            log_ts!("Storing text field in AppDelegate");
-            let _ = self.ivars().text_field.set(text_field);
         }
+
+        // Store the text field
+        log_ts!("Storing text field in AppDelegate");
+        let _ = self.ivars().text_field.set(text_field);
         log_ts!("Text field setup complete");
     }
 
@@ -241,29 +235,21 @@ impl AppDelegate {
 
         // First, collect all clipboard data on the current thread
         log_ts!("update_text_from_clipboard: Getting pasteboard");
-        let pasteboard = unsafe {
-            log_ts!("update_text_from_clipboard: About to call NSPasteboard::generalPasteboard()");
-            let pb = NSPasteboard::generalPasteboard();
-            log_ts!("update_text_from_clipboard: NSPasteboard::generalPasteboard() completed");
-            pb
-        };
+        let pasteboard = unsafe { NSPasteboard::generalPasteboard() };
+        log_ts!("update_text_from_clipboard: NSPasteboard::generalPasteboard() completed");
 
         // Try to get text from the pasteboard
         log_ts!("update_text_from_clipboard: Creating string type for pasteboard query");
         let string_type = ns_string!("public.utf8-plain-text");
 
         log_ts!("update_text_from_clipboard: About to read clipboard content");
-        let clipboard_data = unsafe {
-            log_ts!("update_text_from_clipboard: Calling stringForType to get clipboard text");
-            let start_time = std::time::Instant::now();
-            let clipboard_result = pasteboard.stringForType(string_type);
-            let elapsed = start_time.elapsed();
-            log_ts!(
-                "update_text_from_clipboard: stringForType completed in {:?}",
-                elapsed
-            );
-            clipboard_result
-        };
+        let start_time = std::time::Instant::now();
+        let clipboard_data = unsafe { pasteboard.stringForType(string_type) };
+        let elapsed = start_time.elapsed();
+        log_ts!(
+            "update_text_from_clipboard: stringForType completed in {:?}",
+            elapsed
+        );
 
         // Now dispatch the UI update to the main thread
         let app_delegate_ptr = self as *const _ as usize;
@@ -402,46 +388,42 @@ impl AppDelegate {
 
             let mut iteration_count = 0;
 
-            while unsafe {
+            loop {
                 // Access the atomic flag to see if we should continue checking
-                let should_check = &*(should_check_ptr as *const AtomicU64);
+                let should_check = unsafe { &*(should_check_ptr as *const AtomicU64) };
                 let should_continue = should_check.load(Ordering::SeqCst) == 1;
                 log_ts!(
                     "Clipboard check thread: iteration {}, should continue: {}",
                     iteration_count,
                     should_continue
                 );
-                should_continue
-            } {
+
+                if !should_continue {
+                    break;
+                }
+
                 iteration_count += 1;
 
                 // Get current change count
                 log_ts!("Clipboard check thread: Getting pasteboard");
-                let pasteboard = unsafe {
-                    log_ts!(
-                        "Clipboard check thread: About to call NSPasteboard::generalPasteboard()"
-                    );
-                    let pb = NSPasteboard::generalPasteboard();
-                    log_ts!("Clipboard check thread: NSPasteboard::generalPasteboard() completed");
-                    pb
-                };
+                let pasteboard = unsafe { NSPasteboard::generalPasteboard() };
+                log_ts!("Clipboard check thread: NSPasteboard::generalPasteboard() completed");
 
                 log_ts!("Clipboard check thread: Getting current change count");
-                let current_change_count = unsafe {
-                    log_ts!("Clipboard check thread: About to call pasteboard.changeCount()");
-                    let count = pasteboard.changeCount();
-                    log_ts!("Clipboard check thread: changeCount returned {}", count);
-                    count as u64
-                };
+                let current_change_count = unsafe { pasteboard.changeCount() as u64 };
+                log_ts!(
+                    "Clipboard check thread: changeCount returned {}",
+                    current_change_count
+                );
 
                 // Access the stored change count
                 log_ts!("Clipboard check thread: Retrieving stored change count");
-                let stored_change_count = unsafe {
-                    let change_count = &*(change_count_ptr as *const AtomicU64);
-                    let count = change_count.load(Ordering::SeqCst);
-                    log_ts!("Clipboard check thread: Stored change count is {}", count);
-                    count
-                };
+                let change_count = unsafe { &*(change_count_ptr as *const AtomicU64) };
+                let stored_change_count = change_count.load(Ordering::SeqCst);
+                log_ts!(
+                    "Clipboard check thread: Stored change count is {}",
+                    stored_change_count
+                );
 
                 // Only update if the clipboard has changed
                 if current_change_count != stored_change_count {
@@ -452,22 +434,19 @@ impl AppDelegate {
                     );
 
                     // Update the stored change count
-                    unsafe {
-                        log_ts!("Clipboard check thread: Updating stored change count");
-                        let change_count = &*(change_count_ptr as *const AtomicU64);
-                        change_count.store(current_change_count, Ordering::SeqCst);
-                        log_ts!(
-                            "Clipboard check thread: Stored change count updated to {}",
-                            current_change_count
-                        );
+                    log_ts!("Clipboard check thread: Updating stored change count");
+                    change_count.store(current_change_count, Ordering::SeqCst);
+                    log_ts!(
+                        "Clipboard check thread: Stored change count updated to {}",
+                        current_change_count
+                    );
 
-                        // Get the app delegate and update text
-                        log_ts!("Clipboard check thread: Retrieving app delegate to update text");
-                        let app_delegate = &*(app_delegate_ptr as *const AppDelegate);
-                        log_ts!("Clipboard check thread: Calling update_text_from_clipboard");
-                        app_delegate.update_text_from_clipboard();
-                        log_ts!("Clipboard check thread: Text update complete");
-                    }
+                    // Get the app delegate and update text
+                    log_ts!("Clipboard check thread: Retrieving app delegate to update text");
+                    let app_delegate = unsafe { &*(app_delegate_ptr as *const AppDelegate) };
+                    log_ts!("Clipboard check thread: Calling update_text_from_clipboard");
+                    app_delegate.update_text_from_clipboard();
+                    log_ts!("Clipboard check thread: Text update complete");
                 } else {
                     log_ts!(
                         "Clipboard check thread: No change detected (counts: {})",
