@@ -2,13 +2,16 @@
 #![allow(non_snake_case)]
 
 use std::cell::OnceCell;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::thread;
+use std::time::Duration;
 
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSAutoresizingMaskOptions,
-    NSBackingStoreType, NSTextField, NSWindow, NSWindowDelegate, NSWindowStyleMask,
+    NSBackingStoreType, NSPasteboard, NSTextField, NSWindow, NSWindowDelegate, NSWindowStyleMask,
 };
 use objc2_foundation::{
     ns_string, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize,
@@ -18,6 +21,8 @@ use objc2_foundation::{
 struct AppDelegateIvars {
     window: OnceCell<Retained<NSWindow>>,
     text_field: OnceCell<Retained<NSTextField>>,
+    change_count: AtomicU64,
+    should_check_clipboard: AtomicU64, // Used as a boolean value to control the loop
 }
 
 define_class!(
@@ -40,11 +45,26 @@ define_class!(
             let window = self.create_window(mtm);
             let _ = self.ivars().window.set(window.clone());
 
-            window.setTitle(ns_string!("Simple Window"));
+            window.setTitle(ns_string!("Clipboard Viewer"));
             window.center();
 
             // Create and setup the text field
             self.setup_text_field(&window, mtm);
+
+            // Initialize the change count with the current value
+            let pasteboard = unsafe { NSPasteboard::generalPasteboard() };
+            let initial_change_count = unsafe { pasteboard.changeCount() };
+            self.ivars()
+                .change_count
+                .store(initial_change_count as u64, Ordering::SeqCst);
+
+            // Set flag to start checking clipboard
+            self.ivars()
+                .should_check_clipboard
+                .store(1, Ordering::SeqCst);
+
+            // Start clipboard check loop
+            self.start_clipboard_check_loop();
 
             // Activate app and make window visible
             let app = NSApplication::sharedApplication(mtm);
@@ -56,6 +76,11 @@ define_class!(
     unsafe impl NSWindowDelegate for AppDelegate {
         #[unsafe(method(windowWillClose:))]
         fn windowWillClose(&self, _notification: &NSNotification) {
+            // Stop the clipboard check loop
+            self.ivars()
+                .should_check_clipboard
+                .store(0, Ordering::SeqCst);
+
             let mtm = self.mtm();
             let app = NSApplication::sharedApplication(mtm);
             unsafe { app.terminate(None) };
@@ -117,13 +142,14 @@ impl AppDelegate {
             text_field.setEditable(false);
             text_field.setBezeled(false);
             text_field.setDrawsBackground(false);
+            text_field.setSelectable(true); // Allow selecting text for copying
             text_field.setAutoresizingMask(
                 NSAutoresizingMaskOptions::ViewWidthSizable
                     | NSAutoresizingMaskOptions::ViewHeightSizable,
             );
 
             // Set an initial value
-            text_field.setStringValue(ns_string!("Hello World!"));
+            text_field.setStringValue(ns_string!("Monitoring clipboard... Copy something!"));
 
             // Add to content view
             content_view.addSubview(&text_field);
@@ -131,6 +157,68 @@ impl AppDelegate {
             // Store the text field
             let _ = self.ivars().text_field.set(text_field);
         }
+    }
+
+    fn start_clipboard_check_loop(&self) {
+        // Create a copy of self for the background thread
+        let delegate_ptr = self as *const _ as usize;
+
+        // Create copies of the atomic values to check in another thread
+        let should_check_ptr = &self.ivars().should_check_clipboard as *const _ as usize;
+        let change_count_ptr = &self.ivars().change_count as *const _ as usize;
+        let text_field_ptr = &self.ivars().text_field as *const _ as usize;
+
+        // Spawn a thread to check the clipboard
+        thread::spawn(move || {
+            // Sleep a bit to allow the UI to initialize
+            thread::sleep(Duration::from_millis(500));
+
+            while unsafe {
+                // Access the atomic flag to see if we should continue checking
+                let should_check = &*(should_check_ptr as *const AtomicU64);
+                should_check.load(Ordering::SeqCst) == 1
+            } {
+                // Get current change count
+                let pasteboard = unsafe { NSPasteboard::generalPasteboard() };
+                let current_change_count = unsafe { pasteboard.changeCount() } as u64;
+
+                // Access the stored change count
+                let stored_change_count = unsafe {
+                    let change_count = &*(change_count_ptr as *const AtomicU64);
+                    change_count.load(Ordering::SeqCst)
+                };
+
+                // Only update if the clipboard has changed
+                if current_change_count != stored_change_count {
+                    // Update the stored change count
+                    unsafe {
+                        let change_count = &*(change_count_ptr as *const AtomicU64);
+                        change_count.store(current_change_count, Ordering::SeqCst);
+                    }
+
+                    // Update the text field on the main thread
+                    unsafe {
+                        let text_field_cell =
+                            &*(text_field_ptr as *const OnceCell<Retained<NSTextField>>);
+                        if let Some(text_field) = text_field_cell.get() {
+                            // Set default message
+                            let message = ns_string!("Clipboard contains non-text content");
+
+                            // Try to get text from the pasteboard
+                            let string_type = ns_string!("public.utf8-plain-text");
+                            if let Some(clipboard_text) = pasteboard.stringForType(string_type) {
+                                text_field.setStringValue(&clipboard_text);
+                            } else {
+                                text_field.setStringValue(message);
+                            }
+                        }
+                    }
+                }
+
+                // Sleep for a short duration before checking again
+                thread::sleep(Duration::from_millis(500));
+            }
+        });
     }
 }
 

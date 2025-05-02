@@ -6,5 +6,5 @@ edition = "2021"
 [dependencies]
 objc2 = { version = "0.6" }
 objc2-foundation = { version = "0.3", features = ["NSString", "NSArray", "NSAutoreleasePool"] }
-objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSWindow", "NSButton", "NSImageView", "NSImage", "objc2-uniform-type-identifiers"] }
+objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSWindow", "NSButton", "NSImageView", "NSImage", "objc2-uniform-type-identifiers", "NSPasteboard"] }
 objc2-uniform-type-identifiers = "0.3"
