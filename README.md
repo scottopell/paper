@@ -1,4 +1,4 @@
-# Paper
+# Paperclip
 
 A clipboard viewer for macOS that monitors and displays text content.
 
