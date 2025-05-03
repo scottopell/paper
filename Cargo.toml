@@ -9,3 +9,4 @@ objc2-foundation = { version = "0.3", features = ["NSString", "NSArray", "NSAuto
 objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSWindow", "NSButton", "NSImageView", "NSImage", "objc2-uniform-type-identifiers", "NSPasteboard"] }
 objc2-uniform-type-identifiers = "0.3"
 block2 = "0.6"
+dispatch2 = "0.3"

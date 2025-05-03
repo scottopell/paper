@@ -7,6 +7,7 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use block2::RcBlock;
+use dispatch2::DispatchQueue;
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly};
@@ -371,99 +372,55 @@ impl AppDelegate {
 
     fn start_clipboard_check_loop(&self) {
         log_ts!("Starting clipboard monitoring setup");
-        // Create copies of the atomic values to check in another thread
+
+        // Create a queue for the clipboard monitoring
+        let clipboard_queue = DispatchQueue::new("com.scottopell.paperclip.monitor", None);
+
+        // Store pointers to the data we need to access
         let should_check_ptr = &self.ivars().should_check_clipboard as *const _ as usize;
         let change_count_ptr = &self.ivars().change_count as *const _ as usize;
         let app_delegate_ptr = self as *const _ as usize;
-        log_ts!("Created pointers for cross-thread access");
 
-        // Spawn a thread to check the clipboard
-        log_ts!("Spawning clipboard check thread");
-        thread::spawn(move || {
-            log_ts!("Clipboard check thread: started");
-            // Sleep a bit to allow the UI to initialize
-            log_ts!("Clipboard check thread: initial sleep to allow UI initialization");
-            thread::sleep(Duration::from_millis(500));
-            log_ts!("Clipboard check thread: entering monitoring loop");
+        // Launch the monitoring loop
+        unsafe {
+            clipboard_queue.exec_async(move || {
+                // Create a loop that keeps checking the clipboard
+                loop {
+                    // Get the should_check flag
+                    let should_check = &*(should_check_ptr as *const AtomicU64);
 
-            let mut iteration_count = 0;
+                    // If we should stop checking, exit the loop
+                    if should_check.load(Ordering::SeqCst) != 1 {
+                        log_ts!("Clipboard monitoring stopped");
+                        break;
+                    }
 
-            loop {
-                // Access the atomic flag to see if we should continue checking
-                let should_check = unsafe { &*(should_check_ptr as *const AtomicU64) };
-                let should_continue = should_check.load(Ordering::SeqCst) == 1;
-                log_ts!(
-                    "Clipboard check thread: iteration {}, should continue: {}",
-                    iteration_count,
-                    should_continue
-                );
+                    // Check if the clipboard has changed
+                    let pasteboard = NSPasteboard::generalPasteboard();
+                    let current_change_count = pasteboard.changeCount() as u64;
+                    let change_count = &*(change_count_ptr as *const AtomicU64);
+                    let stored_change_count = change_count.load(Ordering::SeqCst);
 
-                if !should_continue {
-                    break;
+                    // If clipboard content has changed, update it
+                    if current_change_count != stored_change_count {
+                        log_ts!(
+                            "Clipboard changed: {} -> {}",
+                            stored_change_count,
+                            current_change_count
+                        );
+
+                        change_count.store(current_change_count, Ordering::SeqCst);
+                        let app_delegate = &*(app_delegate_ptr as *const AppDelegate);
+                        app_delegate.update_text_from_clipboard();
+                    }
+
+                    // Sleep for 500ms before checking again
+                    thread::sleep(Duration::from_millis(500));
                 }
+            });
+        }
 
-                iteration_count += 1;
-
-                // Get current change count
-                log_ts!("Clipboard check thread: Getting pasteboard");
-                let pasteboard = unsafe { NSPasteboard::generalPasteboard() };
-                log_ts!("Clipboard check thread: NSPasteboard::generalPasteboard() completed");
-
-                log_ts!("Clipboard check thread: Getting current change count");
-                let current_change_count = unsafe { pasteboard.changeCount() as u64 };
-                log_ts!(
-                    "Clipboard check thread: changeCount returned {}",
-                    current_change_count
-                );
-
-                // Access the stored change count
-                log_ts!("Clipboard check thread: Retrieving stored change count");
-                let change_count = unsafe { &*(change_count_ptr as *const AtomicU64) };
-                let stored_change_count = change_count.load(Ordering::SeqCst);
-                log_ts!(
-                    "Clipboard check thread: Stored change count is {}",
-                    stored_change_count
-                );
-
-                // Only update if the clipboard has changed
-                if current_change_count != stored_change_count {
-                    log_ts!(
-                        "Clipboard check thread: Change detected! Current: {}, Stored: {}",
-                        current_change_count,
-                        stored_change_count
-                    );
-
-                    // Update the stored change count
-                    log_ts!("Clipboard check thread: Updating stored change count");
-                    change_count.store(current_change_count, Ordering::SeqCst);
-                    log_ts!(
-                        "Clipboard check thread: Stored change count updated to {}",
-                        current_change_count
-                    );
-
-                    // Get the app delegate and update text
-                    log_ts!("Clipboard check thread: Retrieving app delegate to update text");
-                    let app_delegate = unsafe { &*(app_delegate_ptr as *const AppDelegate) };
-                    log_ts!("Clipboard check thread: Calling update_text_from_clipboard");
-                    app_delegate.update_text_from_clipboard();
-                    log_ts!("Clipboard check thread: Text update complete");
-                } else {
-                    log_ts!(
-                        "Clipboard check thread: No change detected (counts: {})",
-                        current_change_count
-                    );
-                }
-
-                // Sleep for a short duration before checking again
-                log_ts!("Clipboard check thread: Sleeping before next check");
-                thread::sleep(Duration::from_millis(500));
-                log_ts!("Clipboard check thread: Woke up, continuing loop");
-            }
-
-            log_ts!("Clipboard check thread: Exiting monitor loop");
-        });
-
-        log_ts!("Clipboard monitoring thread spawned");
+        log_ts!("Clipboard monitoring started");
     }
 }
 
